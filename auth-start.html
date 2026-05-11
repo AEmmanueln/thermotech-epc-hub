@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Thermotech – Signing in…</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',system-ui,sans-serif;background:#0D2147;min-height:100vh;
+         display:flex;align-items:center;justify-content:center;padding:16px}
+    .card{background:#fff;border-radius:16px;padding:36px 28px;max-width:340px;width:100%;text-align:center}
+    .logo{width:52px;height:52px;background:#000;border:3px solid #E8650A;border-radius:12px;
+          display:flex;align-items:center;justify-content:center;margin:0 auto 14px}
+    .logo span{font-size:24px;font-weight:900;color:#E8650A}
+    h1{font-size:17px;font-weight:800;color:#0D2147;margin:0 0 6px}
+    #status{font-size:13px;color:#64748B;margin:0}
+    .spinner{width:32px;height:32px;border:3px solid #E2E8F0;border-top-color:#E8650A;
+             border-radius:50%;animation:spin .8s linear infinite;margin:20px auto 0}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #err{display:none;margin-top:14px;font-size:12px;color:#e74c3c;
+         background:#fff0f0;border:1px solid #fecaca;border-radius:8px;padding:10px;line-height:1.5}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"><span>T</span></div>
+    <h1>Thermotech Hub</h1>
+    <p id="status">Checking your account…</p>
+    <div class="spinner" id="spinner"></div>
+    <div id="err"></div>
+  </div>
+
+  <script src="https://res.cdn.office.net/teams-js/2.28.0/js/MicrosoftTeams.min.js"></script>
+  <script src="https://alcdn.msauth.net/browser/3.21.0/js/msal-browser.min.js"></script>
+
+  <script>
+  const CLIENT_ID = "b360ccdd-d9d5-46dd-b422-862bd2d7ba59";
+  const TENANT_ID = "a91dadb4-c445-449a-b447-f3944db979fb";
+  const SP_SCOPE  = "https://greenak.sharepoint.com/.default";
+  const SELF_URL  = "https://aemmanueln.github.io/thermotech-epc-hub/auth-start.html";
+
+  const $s = t => { document.getElementById("status").textContent = t; };
+  const fail = msg => {
+    document.getElementById("spinner").style.display = "none";
+    const e = document.getElementById("err");
+    e.style.display = "block";
+    e.textContent = msg;
+    try { microsoftTeams.authentication.notifyFailure(msg); } catch {}
+  };
+
+  // iPhone uses WKWebView which WIPES sessionStorage on every page navigation.
+  // Android uses Chrome Custom Tab which KEEPS sessionStorage across redirects.
+  // Fix: use localStorage — it survives WKWebView navigation on iOS.
+  // Also detect mobile via userAgent as a fallback in case Teams context is slow.
+  const isMobileUA = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+  const pcaConfig = {
+    auth: {
+      clientId:                  CLIENT_ID,
+      authority:                 `https://login.microsoftonline.com/${TENANT_ID}`,
+      redirectUri:               SELF_URL,
+      navigateToLoginRequestUrl: false,
+    },
+    cache: {
+      // ── KEY FIX ────────────────────────────────────────────────────────────
+      // localStorage persists through WKWebView page navigations on iPhone.
+      // sessionStorage was being wiped during loginRedirect on iOS, causing
+      // MSAL to lose the PKCE code verifier and silently fail on redirect back.
+      cacheLocation:          "localStorage",
+      storeAuthStateInCookie: true,   // extra safety net for strict ITP browsers
+    },
+  };
+
+  (async function run() {
+    // ── Step 1: Initialize Teams SDK ────────────────────────────────────────
+    try { await microsoftTeams.app.initialize(); }
+    catch(e) { fail("Teams SDK init failed: " + e.message); return; }
+
+    // ── Step 2: Detect platform ─────────────────────────────────────────────
+    let isMobile = isMobileUA; // default from userAgent
+    let loginHint = "";
+    try {
+      const ctx = await microsoftTeams.app.getContext();
+      const ct  = ctx?.app?.host?.clientType ?? "";
+      if (ct) isMobile = (ct === "ios" || ct === "android");
+      loginHint = ctx?.user?.loginHint ?? "";
+    } catch { /* keep isMobileUA fallback */ }
+
+    // ── Step 3: Initialize MSAL ─────────────────────────────────────────────
+    const pca = new msal.PublicClientApplication(pcaConfig);
+    await pca.initialize();
+
+    // ── Step 4: Handle redirect return (runs after loginRedirect on iPhone) ─
+    // This path executes when Microsoft redirects BACK to this page post-login.
+    let redirectResult = null;
+    try { redirectResult = await pca.handleRedirectPromise(); }
+    catch(e) { console.warn("[auth-start] handleRedirectPromise:", e.message); }
+
+    if (redirectResult?.account) {
+      $s("Getting your tokens…");
+      await notifyDone(pca, redirectResult.account, redirectResult.accessToken);
+      return;
+    }
+
+    // ── Step 5: Try silent auth (already signed-in session) ─────────────────
+    const cached = pca.getAllAccounts();
+    if (cached.length > 0) {
+      $s("Restoring session…");
+      try {
+        pca.setActiveAccount(cached[0]);
+        const [gRes, spRes] = await Promise.all([
+          pca.acquireTokenSilent({ scopes: ["User.Read"], account: cached[0] }),
+          pca.acquireTokenSilent({ scopes: [SP_SCOPE],   account: cached[0] }),
+        ]);
+        microsoftTeams.authentication.notifySuccess(JSON.stringify({
+          graphToken: gRes.accessToken,
+          spToken:    spRes.accessToken,
+          account:    minAccount(cached[0]),
+        }));
+        return;
+      } catch { /* fall through to fresh login */ }
+    }
+
+    // ── Step 6: Fresh login ──────────────────────────────────────────────────
+    if (isMobile) {
+      // iPhone / Android:
+      // Popup (window.open) is blocked in all iOS WebViews.
+      // loginRedirect navigates within the Teams-controlled browser window —
+      // this works. With localStorage (above), the PKCE verifier survives the
+      // redirect on iPhone unlike sessionStorage which was wiped.
+      $s("Opening Microsoft login…");
+      try {
+        await pca.loginRedirect({
+          scopes:    ["User.Read", SP_SCOPE],
+          loginHint: loginHint,
+        });
+        // page navigates away — Step 4 runs when it comes back
+      } catch(e) {
+        fail("Login failed: " + e.message);
+      }
+
+    } else {
+      // Teams Desktop: loginPopup is fast and doesn't navigate the page away.
+      $s("Opening sign-in window…");
+      try {
+        const result = await pca.loginPopup({
+          scopes:    ["User.Read", SP_SCOPE],
+          loginHint: loginHint,
+        });
+        if (result?.account) {
+          await notifyDone(pca, result.account, result.accessToken);
+        }
+      } catch(e) {
+        if (e.errorCode === "popup_window_error" || e.errorCode === "empty_window_error") {
+          // Popup blocked even on desktop — fall back to redirect
+          $s("Opening Microsoft login…");
+          try { await pca.loginRedirect({ scopes: ["User.Read", SP_SCOPE], loginHint }); }
+          catch(e2) { fail(e2.message); }
+        } else {
+          fail(e.message);
+        }
+      }
+    }
+  })();
+
+  async function notifyDone(pca, account, graphToken) {
+    pca.setActiveAccount(account);
+    let spToken = "";
+    try {
+      const r = await pca.acquireTokenSilent({ scopes: [SP_SCOPE], account });
+      spToken = r.accessToken;
+    } catch { /* sp token fetched on-demand later via second popup */ }
+    microsoftTeams.authentication.notifySuccess(JSON.stringify({
+      graphToken,
+      spToken,
+      account: minAccount(account),
+    }));
+  }
+
+  function minAccount(a) {
+    return { homeAccountId: a.homeAccountId, username: a.username, name: a.name ?? a.username };
+  }
+  </script>
+</body>
+</html>
