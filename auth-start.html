@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Thermotech – Signing in…</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',system-ui,sans-serif;background:#0D2147;min-height:100vh;
+         display:flex;align-items:center;justify-content:center;padding:16px}
+    .card{background:#fff;border-radius:16px;padding:36px 28px;max-width:340px;width:100%;text-align:center}
+    .logo{width:52px;height:52px;background:#000;border:3px solid #E8650A;border-radius:12px;
+          display:flex;align-items:center;justify-content:center;margin:0 auto 14px}
+    .logo span{font-size:24px;font-weight:900;color:#E8650A}
+    h1{font-size:17px;font-weight:800;color:#0D2147;margin:0 0 6px}
+    #status{font-size:13px;color:#64748B;margin:0}
+    .spinner{width:32px;height:32px;border:3px solid #E2E8F0;border-top-color:#E8650A;
+             border-radius:50%;animation:spin .8s linear infinite;margin:20px auto 0}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #err{display:none;margin-top:14px;font-size:12px;color:#e74c3c;
+         background:#fff0f0;border:1px solid #fecaca;border-radius:8px;padding:10px;line-height:1.5}
+    button.retry{margin-top:14px;background:#0D2147;color:#fff;border:none;border-radius:8px;
+                 padding:10px 20px;font-size:13px;font-weight:700;cursor:pointer;width:100%;display:none}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"><span>T</span></div>
+    <h1>Thermotech Hub</h1>
+    <p id="status">Opening sign-in…</p>
+    <div class="spinner" id="spinner"></div>
+    <div id="err"></div>
+    <button class="retry" id="retryBtn" onclick="location.reload()">Try Again</button>
+  </div>
+
+  <script src="https://res.cdn.office.net/teams-js/2.28.0/js/MicrosoftTeams.min.js"></script>
+  <script src="https://alcdn.msauth.net/browser/3.21.0/js/msal-browser.min.js"></script>
+
+  <script>
+  const CLIENT_ID = "b360ccdd-d9d5-46dd-b422-862bd2d7ba59";
+  const TENANT_ID = "a91dadb4-c445-449a-b447-f3944db979fb";
+  const SP_SCOPE  = "https://greenak.sharepoint.com/.default";
+  const SELF_URL  = "https://aemmanueln.github.io/thermotech-epc-hub/auth-start.html";
+
+  const $s  = t  => { document.getElementById("status").textContent = t; };
+  const $err = msg => {
+    document.getElementById("spinner").style.display = "none";
+    document.getElementById("retryBtn").style.display = "block";
+    const e = document.getElementById("err");
+    e.style.display = "block";
+    e.textContent = msg;
+    try { microsoftTeams.authentication.notifyFailure(msg); } catch {}
+  };
+
+  // Wraps any promise with a timeout — resolves to `fallback` if it takes too long.
+  // This prevents microsoftTeams.app.initialize() from hanging the whole page.
+  const withTimeout = (p, ms, fallback) =>
+    Promise.race([p, new Promise(r => setTimeout(() => r(fallback), ms))]);
+
+  // iPhone uses WKWebView — sessionStorage is wiped on navigation.
+  // localStorage persists through WKWebView page navigations, so MSAL PKCE
+  // state survives the loginRedirect round-trip on iPhone.
+  const isMobileUA = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+  const MSAL_CONFIG = {
+    auth: {
+      clientId:                  CLIENT_ID,
+      authority:                 `https://login.microsoftonline.com/${TENANT_ID}`,
+      redirectUri:               SELF_URL,
+      navigateToLoginRequestUrl: false,
+    },
+    cache: {
+      cacheLocation:          "localStorage", // survives WKWebView navigation on iPhone
+      storeAuthStateInCookie: true,           // belt-and-suspenders for strict browsers
+    },
+  };
+
+  (async function run() {
+    // ── Step 1: Teams SDK — 3 s timeout so it NEVER hangs the page ──────────
+    // The SDK sometimes fails to handshake in popup/WebView contexts.
+    // We proceed regardless — notifySuccess still works via URL scheme on iOS.
+    let teamsReady = false;
+    try {
+      const result = await withTimeout(microsoftTeams.app.initialize(), 3000, "timeout");
+      teamsReady = result !== "timeout";
+    } catch { teamsReady = false; }
+
+    // ── Step 2: Platform detection (1 s timeout) ─────────────────────────────
+    let isMobile  = isMobileUA;
+    let loginHint = "";
+    if (teamsReady) {
+      try {
+        const ctx = await withTimeout(microsoftTeams.app.getContext(), 1500, null);
+        if (ctx) {
+          const ct = ctx?.app?.host?.clientType ?? "";
+          if (ct) isMobile = (ct === "ios" || ct === "android");
+          loginHint = ctx?.user?.loginHint ?? "";
+        }
+      } catch {}
+    }
+
+    // ── Step 3: MSAL ─────────────────────────────────────────────────────────
+    const pca = new msal.PublicClientApplication(MSAL_CONFIG);
+    await pca.initialize();
+
+    // ── Step 4: Handle redirect return (iPhone after Microsoft login) ────────
+    let redirectResult = null;
+    try { redirectResult = await pca.handleRedirectPromise(); }
+    catch (e) { console.warn("[auth-start] handleRedirectPromise:", e.message); }
+
+    if (redirectResult?.account) {
+      $s("Getting your tokens…");
+      await finish(pca, redirectResult.account, redirectResult.accessToken);
+      return;
+    }
+
+    // ── Step 5: Try silent (existing session) ────────────────────────────────
+    const cached = pca.getAllAccounts();
+    if (cached.length > 0) {
+      $s("Restoring your session…");
+      try {
+        pca.setActiveAccount(cached[0]);
+        const [gRes, spRes] = await Promise.all([
+          pca.acquireTokenSilent({ scopes: ["User.Read"], account: cached[0] }),
+          pca.acquireTokenSilent({ scopes: [SP_SCOPE],   account: cached[0] }),
+        ]);
+        notify({ graphToken: gRes.accessToken, spToken: spRes.accessToken, account: slim(cached[0]) });
+        return;
+      } catch { /* fall through to fresh login */ }
+    }
+
+    // ── Step 6: Fresh login ───────────────────────────────────────────────────
+    if (isMobile) {
+      // iPhone/Android — popups blocked in all iOS WebViews.
+      // loginRedirect navigates within the Teams-controlled browser window.
+      // localStorage (above) keeps the PKCE code verifier alive through navigation.
+      $s("Opening Microsoft login…");
+      try {
+        await pca.loginRedirect({ scopes: ["User.Read", SP_SCOPE], loginHint });
+        // page navigates away → Step 4 runs when it returns
+      } catch (e) {
+        $err("Login failed: " + e.message);
+      }
+
+    } else {
+      // Teams Desktop — loginPopup is fast and doesn't navigate away.
+      $s("Opening sign-in window…");
+      try {
+        const result = await pca.loginPopup({ scopes: ["User.Read", SP_SCOPE], loginHint });
+        if (result?.account) await finish(pca, result.account, result.accessToken);
+      } catch (e) {
+        if (e.errorCode === "popup_window_error" || e.errorCode === "empty_window_error") {
+          // Popup blocked — fall back to redirect
+          $s("Opening Microsoft login…");
+          try { await pca.loginRedirect({ scopes: ["User.Read", SP_SCOPE], loginHint }); }
+          catch (e2) { $err(e2.message); }
+        } else {
+          $err(e.message || String(e));
+        }
+      }
+    }
+  })();
+
+  async function finish(pca, account, graphToken) {
+    pca.setActiveAccount(account);
+    let spToken = "";
+    try {
+      const r = await pca.acquireTokenSilent({ scopes: [SP_SCOPE], account });
+      spToken = r.accessToken;
+    } catch {}
+    notify({ graphToken, spToken, account: slim(account) });
+  }
+
+  function notify(data) {
+    try {
+      microsoftTeams.authentication.notifySuccess(JSON.stringify(data));
+    } catch {
+      // If Teams SDK isn't available, try opener (desktop fallback)
+      if (window.opener) {
+        window.opener.postMessage({ type: "tt-auth-success", data }, "*");
+        window.close();
+      } else {
+        $err("Sign-in complete but could not return to app. Please close this window and try again.");
+      }
+    }
+  }
+
+  function slim(a) {
+    return { homeAccountId: a.homeAccountId, username: a.username, name: a.name ?? a.username };
+  }
+  </script>
+</body>
+</html>
