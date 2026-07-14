@@ -1,309 +1,139 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Thermotech – Sign in</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:'Segoe UI',system-ui,sans-serif;background:#0D2147;min-height:100vh;
-         display:flex;align-items:center;justify-content:center;padding:16px}
-    .card{background:#fff;border-radius:16px;padding:36px 28px;max-width:340px;width:100%;text-align:center}
-    .logo{width:52px;height:52px;background:#000;border:3px solid #E8650A;border-radius:12px;
-          display:flex;align-items:center;justify-content:center;margin:0 auto 14px}
-    .logo span{font-size:24px;font-weight:900;color:#E8650A}
-    h1{font-size:17px;font-weight:800;color:#0D2147;margin:0 0 6px}
-    #status{font-size:13px;color:#64748B;margin:0;min-height:18px}
-    .spinner{width:32px;height:32px;border:3px solid #E2E8F0;border-top-color:#E8650A;
-             border-radius:50%;animation:spin .8s linear infinite;margin:18px auto 0}
-    @keyframes spin{to{transform:rotate(360deg)}}
-    #signInBtn{display:none;margin-top:18px;width:100%;padding:14px 16px;background:#E8650A;
-               color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;
-               cursor:pointer;-webkit-tap-highlight-color:transparent}
-    #signInBtn:active{opacity:0.82}
-    #err{display:none;margin-top:12px;font-size:12px;color:#e74c3c;background:#fff0f0;
-         border:1px solid #fecaca;border-radius:8px;padding:10px;line-height:1.5;text-align:left}
-    #retryBtn{display:none;margin-top:10px;width:100%;padding:10px;background:#0D2147;
-              color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer}
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Signing in…</title>
+<!--
+  ══════════════════════════════════════════════════════════════════════════
+  auth-start.html — REQUIRED for Teams Desktop / Teams Mobile sign-in.
+
+  This is a standalone page, NOT part of the React app. Teams opens it as
+  its own small popup window when microsoftTeams.authentication.authenticate()
+  is called from sp-storage.js. This page completes the Microsoft sign-in
+  INSIDE that popup, then hands the resulting tokens back to the parent
+  Teams tab via microsoftTeams.authentication.notifySuccess(...).
+
+  Before this file existed, that popup call pointed at a URL that returned
+  nothing — Teams had no valid page to load for the sign-in step, which is
+  almost certainly why the flow was landing somewhere unexpected (like
+  Outlook) instead of completing inside Teams.
+
+  ── DEPLOYMENT ──────────────────────────────────────────────────────────
+  Place this file at:  C:\Users\THERMOTECH\ThermoTechVite\public\auth-start.html
+  Vite copies everything in /public/ as-is into the build output, so after
+  `npm run build` this will be published at exactly:
+    https://aemmanueln.github.io/thermotech-epc-hub/auth-start.html
+  — which is exactly what SP_CONFIG.authStartUrl in sp-storage.js expects.
+
+  ── ONE-TIME AZURE AD STEP (cannot be done from code) ──────────────────
+  This exact URL must be registered as a Redirect URI in Azure AD:
+    Azure Portal → App registrations → (this app, clientId
+    b360ccdd-d9d5-46dd-b422-862bd2d7ba59) → Authentication →
+    Single-page application → Add URI:
+      https://aemmanueln.github.io/thermotech-epc-hub/auth-start.html
+  Without this registration, sign-in will fail with a redirect_uri_mismatch
+  error even though this file is deployed correctly. This is a one-time
+  setup step in the Azure Portal, not something fixable from the app code.
+  ══════════════════════════════════════════════════════════════════════════
+-->
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js"></script>
+<style>
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background:#0D2147; color:#fff;
+         display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+  .box { text-align:center; }
+  .spinner { width:36px; height:36px; border:3px solid rgba(255,255,255,0.25);
+             border-top-color:#E8650A; border-radius:50%; margin:0 auto 16px;
+             animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .err { color:#ff8080; max-width:360px; font-size:13px; margin-top:10px; }
+</style>
 </head>
 <body>
-<div class="card">
-  <div class="logo"><span>T</span></div>
-  <h1>Thermotech Hub</h1>
-  <p id="status">Starting…</p>
-  <div class="spinner" id="spinner"></div>
-  <button id="signInBtn">Sign in with Microsoft</button>
-  <div id="err"></div>
-  <button id="retryBtn" onclick="location.reload()">Try Again</button>
-</div>
-
-<script src="https://res.cdn.office.net/teams-js/2.28.0/js/MicrosoftTeams.min.js"></script>
+  <div class="box">
+    <div class="spinner"></div>
+    <p id="status">Signing in…</p>
+    <p id="err" class="err" style="display:none;"></p>
+  </div>
 
 <script>
-const CLIENT_ID   = "b360ccdd-d9d5-46dd-b422-862bd2d7ba59";
-const TENANT_ID   = "a91dadb4-c445-449a-b447-f3944db979fb";
-const GRAPH_SCOPE = "https://graph.microsoft.com/User.Read";
-const SP_SCOPE    = "https://greenak.sharepoint.com/.default";
-const SELF_URL    = "https://aemmanueln.github.io/thermotech-epc-hub/auth-start.html";
-const AUTH_BASE   = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0`;
+(function () {
+  var CLIENT_ID     = "b360ccdd-d9d5-46dd-b422-862bd2d7ba59";
+  var TENANT_ID     = "a91dadb4-c445-449a-b447-f3944db979fb";
+  var SELF_URL      = "https://aemmanueln.github.io/thermotech-epc-hub/auth-start.html";
+  var SP_SCOPE      = "https://greenak.sharepoint.com/.default";
 
-const $s   = t => { document.getElementById("status").textContent = t; };
-const $id  = id => document.getElementById(id);
-const hide = id => { $id(id).style.display = "none"; };
-const show = id => { $id(id).style.display = "block"; };
-
-const withTimeout = (p, ms, fb) =>
-  Promise.race([p, new Promise(r => setTimeout(() => r(fb), ms))]);
-
-function showSignInButton(loginHint) {
-  hide("spinner"); show("signInBtn");
-  $id("signInBtn").onclick = async () => {
-    hide("signInBtn"); show("spinner");
-    $s("Redirecting to Microsoft…");
-    try { await doRedirect(loginHint); }
-    catch(e) { showErr("Redirect failed: " + e.message); }
-  };
-}
-
-function showErr(msg) {
-  hide("spinner"); show("retryBtn"); show("err");
-  $id("err").textContent = msg;
-  try { microsoftTeams.authentication.notifyFailure(msg); } catch {}
-}
-
-// ── PKCE — verifier travels in the `state` URL param, NOT in localStorage ────
-// This is the key fix for iPhone: WKWebView wipes localStorage on navigation,
-// so we never store the PKCE verifier there. Azure AD passes `state` back
-// unchanged, so we read the verifier from the URL when we return.
-function b64url(buf) {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-}
-function genVerifier() {
-  return b64url(crypto.getRandomValues(new Uint8Array(32)));
-}
-async function genChallenge(v) {
-  return b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v)));
-}
-
-async function doRedirect(loginHint) {
-  const verifier  = genVerifier();
-  const challenge = await genChallenge(verifier);
-  const state     = JSON.stringify({ v: verifier });
-  const params    = new URLSearchParams({
-    client_id:             CLIENT_ID,
-    response_type:         "code",
-    redirect_uri:          SELF_URL,
-    scope:                 `openid profile ${GRAPH_SCOPE} offline_access`,
-    code_challenge:        challenge,
-    code_challenge_method: "S256",
-    state,
-    response_mode:         "query",
-    ...(loginHint ? { login_hint: loginHint } : {}),
-  });
-  window.location.href = `${AUTH_BASE}/authorize?${params}`;
-}
-
-async function exchangeCode(code, verifier) {
-  const r = await fetch(`${AUTH_BASE}/token`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body:    new URLSearchParams({
-      client_id:     CLIENT_ID,
-      grant_type:    "authorization_code",
-      code,
-      redirect_uri:  SELF_URL,
-      code_verifier: verifier,
-      scope:         `openid profile ${GRAPH_SCOPE} offline_access`,
-    }),
-  });
-  const j = await r.json();
-  if (j.error) throw new Error(j.error_description || j.error);
-  return j;
-}
-
-async function getSPToken(refreshToken) {
-  try {
-    const r = await fetch(`${AUTH_BASE}/token`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body:    new URLSearchParams({
-        client_id:     CLIENT_ID,
-        grant_type:    "refresh_token",
-        refresh_token: refreshToken,
-        scope:         SP_SCOPE,
-        redirect_uri:  SELF_URL,
-      }),
-    });
-    const j = await r.json();
-    return j.access_token || "";
-  } catch { return ""; }
-}
-
-function notifyOK(data) {
-  try { microsoftTeams.authentication.notifySuccess(JSON.stringify(data)); }
-  catch(e) { showErr("Auth complete but couldn't return to app: " + e.message); }
-}
-
-function loadScript(src) {
-  return new Promise((res, rej) => {
-    const s = document.createElement("script");
-    s.src = src; s.onload = res; s.onerror = rej;
-    document.head.appendChild(s);
-  });
-}
-
-// ── Main ──────────────────────────────────────────────────────────────────────
-(async function main() {
-  // 1. Teams SDK init — hard 3 s timeout, never hangs
-  $s("Connecting to Teams…");
-  let teamsReady = false;
-  let loginHint  = "";
-  let isMobile   = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
-  try {
-    const r = await withTimeout(microsoftTeams.app.initialize(), 3000, "timeout");
-    teamsReady = r !== "timeout";
-  } catch {}
-
-  if (teamsReady) {
-    try {
-      const ctx = await withTimeout(microsoftTeams.app.getContext(), 1500, null);
-      if (ctx) {
-        const ct = ctx?.app?.host?.clientType ?? "";
-        if (ct) isMobile = (ct === "ios" || ct === "android");
-        loginHint = ctx?.user?.loginHint ?? "";
-      }
-    } catch {}
+  function showError(msg) {
+    document.getElementById("status").textContent = "Sign-in failed";
+    var e = document.getElementById("err");
+    e.textContent = msg;
+    e.style.display = "block";
+    console.error("[auth-start]", msg);
+    try { microsoftTeams.authentication.notifyFailure(String(msg)); } catch (_e) {}
   }
 
-  // 2. Check if returning from Azure AD redirect (code + state in URL)
-  const p    = new URLSearchParams(window.location.search);
-  const code = p.get("code");
-  const rawState  = p.get("state");
-  const authError = p.get("error");
-
-  if (authError) {
-    showErr(`Sign-in error: ${p.get("error_description") || authError}`);
+  if (typeof microsoftTeams === "undefined") {
+    showError("This page must be opened inside Microsoft Teams.");
     return;
   }
 
-  if (code && rawState) {
-    $s("Completing sign-in…");
-    let state;
-    try { state = JSON.parse(rawState); }
-    catch { showErr("Bad state param — please try again."); return; }
-
-    if (!state.v) { showErr("Missing PKCE verifier — please try again."); return; }
-
-    try {
-      const tokens = await exchangeCode(code, state.v);
-      if (!tokens.access_token) throw new Error("No access token returned");
-
-      $s("Getting SharePoint access…");
-      const spToken = tokens.refresh_token
-        ? await getSPToken(tokens.refresh_token)
-        : "";
-
-      $s("Done!");
-
-      let account = { homeAccountId: "", username: loginHint, name: loginHint };
-      try {
-        const me = await fetch("https://graph.microsoft.com/v1.0/me",
-          { headers: { Authorization: `Bearer ${tokens.access_token}` } }
-        ).then(r => r.json());
-        account = {
-          homeAccountId: me.id || "",
-          username:      me.mail || me.userPrincipalName || loginHint,
-          name:          me.displayName || loginHint,
-        };
-      } catch {}
-
-      notifyOK({ graphToken: tokens.access_token, spToken, account });
-
-    } catch(e) {
-      showErr("Sign-in failed: " + e.message);
-    }
-    return;
-  }
-
-  // 3. No redirect return — need to log in
-  if (isMobile) {
-    // iPhone / Android: show button immediately, user taps → redirect to Azure AD
-    // No MSAL, no localStorage — verifier is stored in the URL state param only
-    $s("Tap below to sign in to your Microsoft account");
-    showSignInButton(loginHint);
-
-  } else {
-    // Teams Desktop: use MSAL popup (fast, no page navigation)
-    $s("Opening Microsoft sign-in…");
-    try {
-      await loadScript("https://alcdn.msauth.net/browser/3.21.0/js/msal-browser.min.js");
-    } catch {
-      $s("Network error loading sign-in library");
-      showSignInButton(loginHint);
-      return;
-    }
-
-    const pca = new msal.PublicClientApplication({
+  microsoftTeams.app.initialize().then(function () {
+    var msalConfig = {
       auth: {
-        clientId:    CLIENT_ID,
-        authority:   `https://login.microsoftonline.com/${TENANT_ID}`,
+        clientId: CLIENT_ID,
+        authority: "https://login.microsoftonline.com/" + TENANT_ID,
         redirectUri: SELF_URL,
         navigateToLoginRequestUrl: false,
       },
-      cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false },
-    });
+      cache: {
+        cacheLocation: "localStorage",
+        storeAuthStateInCookie: true, // helps on browsers that restrict 3rd-party storage inside the Teams popup
+      },
+    };
 
-    await pca.initialize();
+    var msalInstance = new msal.PublicClientApplication(msalConfig);
 
-    // Try silent first
-    const cached = pca.getAllAccounts();
-    if (cached.length > 0) {
-      $s("Restoring your session…");
-      try {
-        pca.setActiveAccount(cached[0]);
-        const [gRes, spRes] = await Promise.all([
-          pca.acquireTokenSilent({ scopes: [GRAPH_SCOPE], account: cached[0] }),
-          pca.acquireTokenSilent({ scopes: [SP_SCOPE],   account: cached[0] }),
-        ]);
-        notifyOK({
-          graphToken: gRes.accessToken,
-          spToken:    spRes.accessToken,
-          account: {
-            homeAccountId: cached[0].homeAccountId,
-            username:      cached[0].username,
-            name:          cached[0].name ?? cached[0].username,
-          },
-        });
-        return;
-      } catch {}
-    }
-
-    // Popup login for desktop
-    try {
-      const result = await pca.loginPopup({
-        scopes:    [GRAPH_SCOPE, SP_SCOPE],
-        loginHint: loginHint,
+    function finishWithAccount(account) {
+      document.getElementById("status").textContent = "Finishing sign-in…";
+      msalInstance.setActiveAccount(account);
+      Promise.all([
+        msalInstance.acquireTokenSilent({ scopes: ["User.Read"], account: account }),
+        msalInstance.acquireTokenSilent({ scopes: [SP_SCOPE], account: account }),
+      ]).then(function (results) {
+        var payload = {
+          graphToken: results[0].accessToken,
+          spToken: results[1].accessToken,
+          account: account,
+        };
+        microsoftTeams.authentication.notifySuccess(JSON.stringify(payload));
+      }).catch(function (err) {
+        // Silent token acquisition can fail even right after login (e.g. the
+        // SharePoint resource needs its own interactive consent the first
+        // time). Fall back to an interactive redirect scoped to SharePoint.
+        console.warn("[auth-start] Silent token acquisition failed, retrying interactively:", err);
+        msalInstance.acquireTokenRedirect({ scopes: [SP_SCOPE], account: account });
       });
-      if (result?.account) {
-        notifyOK({
-          graphToken: result.accessToken,
-          spToken:    "",
-          account: {
-            homeAccountId: result.account.homeAccountId,
-            username:      result.account.username,
-            name:          result.account.name ?? result.account.username,
-          },
-        });
-      }
-    } catch(e) {
-      // Popup blocked — fall back to button + redirect
-      $s("Tap below to sign in");
-      showSignInButton(loginHint);
     }
-  }
+
+    msalInstance.handleRedirectPromise().then(function (response) {
+      if (response && response.account) {
+        finishWithAccount(response.account);
+        return;
+      }
+      var accounts = msalInstance.getAllAccounts();
+      if (accounts.length > 0) {
+        finishWithAccount(accounts[0]);
+      } else {
+        document.getElementById("status").textContent = "Redirecting to Microsoft sign-in…";
+        msalInstance.loginRedirect({ scopes: ["User.Read"] });
+      }
+    }).catch(function (err) {
+      showError(err && err.errorMessage ? err.errorMessage : String(err));
+    });
+  }).catch(function (err) {
+    showError("Could not connect to Teams: " + String(err));
+  });
 })();
 </script>
 </body>
