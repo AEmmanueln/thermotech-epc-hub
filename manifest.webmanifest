@@ -1,0 +1,18 @@
+{
+  "name": "Thermotech EPC Operations Hub",
+  "short_name": "TEPL Hub",
+  "description": "Thermotech Engineering & Projects Ltd — EPC Operations Hub. Projects, workload, site diary, quality, commercial, finance and HR in one place.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0D2147",
+  "theme_color": "#0D2147",
+  "lang": "en",
+  "categories": ["business", "productivity"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
